@@ -2034,10 +2034,10 @@ async def get_discovery_providers():
             "default": DEFAULT_PROVIDER,
             "selected": await state.get_setting("discovery_provider") or DEFAULT_PROVIDER,
             "paused": await state.get_setting("discovery_paused"),
-            "running": bool(_discovery_task and not _discovery_task.done()),
-            "running_kind": _discovery_kind,
+            "running": (False if current_home().hosted else bool(_discovery_task and not _discovery_task.done())),
+            "running_kind": ("" if current_home().hosted else _discovery_kind),
             "unprofiled": await state.count_companies_needing_profile(),
-            "last_report": _discovery_report,
+            "last_report": (None if current_home().hosted else _discovery_report),
         }
     except Exception as e:
         logger.exception("discovery providers failed")
@@ -2079,6 +2079,7 @@ async def start_discovery(request: Request):
     Discovery takes minutes, not milliseconds — holding the request open
     would just time out. Progress shows up in the run log.
     """
+    require_self_hosted("local_discovery")
     global _discovery_task, _discovery_report
 
     if _discovery_task and not _discovery_task.done():
@@ -2141,6 +2142,7 @@ async def start_profile():
 
     Free and model-free, so there is nothing to estimate and no cap to set.
     """
+    require_self_hosted("local_discovery")
     global _discovery_task, _discovery_report
 
     if _discovery_task and not _discovery_task.done():
