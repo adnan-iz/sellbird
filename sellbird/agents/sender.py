@@ -307,6 +307,12 @@ class Sender:
         remaining = max_sends - sends_today
         if remaining <= 0:
             logger.info(f"Sender: Daily send limit reached ({sends_today}/{max_sends}). Skipping.")
+            # A capacity hold is not an error: resume after local midnight.
+            tomorrow = (_local_now().replace(hour=0, minute=1, second=0, microsecond=0)
+                        + timedelta(days=1))
+            await self.state.set_setting(
+                "instantly_deploy_retry_after",
+                tomorrow.astimezone(timezone.utc).replace(tzinfo=None).isoformat())
             return
 
         for campaign in draft_campaigns:
