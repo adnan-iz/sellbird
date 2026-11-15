@@ -135,6 +135,8 @@ def _mask_key(key: str) -> str:
 def _read_env_file() -> dict[str, str]:
     """Read .env file and return as dict."""
     env_vars = {}
+    if current_home().hosted:
+        return env_vars  # hosted secrets live in the per-workspace secret backend
     env_file = current_home().env_file
     if env_file.exists():
         for line in read_user_text(env_file).splitlines():
@@ -246,7 +248,8 @@ async def get_setup_status():
 
     # 2. Env file
     env_vars = _read_env_file()
-    env_exists = current_home().env_file.exists() and bool(env_vars)
+    env_exists = (bool(env_vars) if current_home().hosted
+                  else current_home().env_file.exists() and bool(env_vars))
     checks.append({
         "id": "env_file", "label": "Environment file (.env)",
         "done": env_exists,
@@ -493,6 +496,7 @@ async def save_env_settings(request: Request):
 @app.post("/api/trulyinbox/connect")
 async def trulyinbox_connect(request: Request):
     """Check a TrulyInbox key against the sending mailbox, then save it to .env."""
+    require_self_hosted("env_settings")
     from sellbird import deliverability as d
     from sellbird.integrations import trulyinbox as ti
     try:
