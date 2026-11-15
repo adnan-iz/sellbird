@@ -889,6 +889,7 @@ async def get_sellbird_status():
 @app.post("/api/sellbird/start")
 async def start_sellbird():
     """Start Sellbird's heartbeat loop as a subprocess."""
+    require_self_hosted("local_ai_loop")
     global _sellbird_process, _sellbird_started_at
 
     if _check_sellbird_pid():
@@ -936,6 +937,7 @@ async def start_sellbird():
 @app.post("/api/sellbird/stop")
 async def stop_sellbird():
     """Stop the Sellbird subprocess."""
+    require_self_hosted("local_ai_loop")
     global _sellbird_process, _sellbird_started_at
 
     pid = _check_sellbird_pid()
@@ -984,6 +986,7 @@ async def stop_sellbird():
 @app.get("/api/sellbird/logs")
 async def get_sellbird_logs():
     """Get recent log lines."""
+    require_self_hosted("process_logs")
     if not LOG_FILE.exists():
         return {"lines": []}
     try:
