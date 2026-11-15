@@ -140,3 +140,52 @@ def test_brain_reads_prompts_and_skills_from_the_current_home(tmp_path):
     with use_home(Home.for_root(tmp_path)):
         assert brain.load_prompt("writer", name="Dana") == "hi Dana"
         assert brain.load_skill("tone") == "be brief"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_query_db_uses_active_workspace_database(tmp_path):
+    """An authenticated hosted request must not query the default workspace."""
+    import sellbird.dashboard as dash
+    import aiosqlite
+
+    first, second = (Home.for_root(tmp_path / name, mode="hosted")
+                     for name in ("first", "second"))
+    for home, company_name in ((first, "FIRST"), (second, "SECOND")):
+        home.data_dir.mkdir(parents=True)
+        async with aiosqlite.connect(home.db_path) as db:
+            await db.execute("CREATE TABLE probe (name TEXT)")
+            await db.execute("INSERT INTO probe VALUES (?)", (company_name,))
+            await db.commit()
+
+    for home, expected in ((first, "FIRST"), (second, "SECOND")):
+        with use_home(home):
+            rows = await dash.query_db("SELECT name FROM probe")
+            assert rows == [{"name": expected}]
+
+
+def test_dashboard_state_uses_active_workspace_path(tmp_path):
+    import sellbird.dashboard as dash
+
+    for name in ("a", "b"):
+        home = Home.for_root(tmp_path / name, mode="hosted")
+        with use_home(home):
+            assert dash._state().db_path == str(home.db_path)
+
+
+def test_hosted_env_settings_are_refused(tmp_path):
+    from fastapi.testclient import TestClient
+    import sellbird.dashboard as dash
+    from starlette.middleware import Middleware
+
+    class Open:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            await self.app(scope, receive, send)
+
+    app = dash.build_app(guard=Middleware(Open))
+    app.state.home = Home.for_root(tmp_path, mode="hosted")
+    resp = TestClient(app).post("/api/settings/env", json={"SMTP_PASSWORD": "secret"})
+    assert resp.status_code == 409
+    assert not (tmp_path / ".env").exists()
