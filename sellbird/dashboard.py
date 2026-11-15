@@ -1571,7 +1571,7 @@ async def _sellbird_committed_ids() -> set[str]:
 
 async def _hand_sent_ids() -> set[str]:
     from sellbird.state import MANUAL_SEND_KEY
-    rows = await query_db("SELECT key FROM settings WHERE key LIKE ?", (MANUAL_SEND_KEY + "%",))
+    rows = await query_db("SELECT key FROM settings WHERE key LIKE ?", (MANUAL_SEND_KEY + "%",), strict=True)
     return {r["key"][len(MANUAL_SEND_KEY):] for r in rows}
 
 
@@ -1584,7 +1584,7 @@ async def _sellbird_sent_to(prospect_id: str) -> bool:
     if await query_db(
             "SELECT 1 FROM outbox WHERE prospect_id = ? AND (status IN ('sending', 'sent') "
             "OR (status = 'failed' AND substr(error, 1, ?) = ?)) LIMIT 1",
-            (prospect_id, len(MAYBE_SENT_PREFIX), MAYBE_SENT_PREFIX)):
+            (prospect_id, len(MAYBE_SENT_PREFIX), MAYBE_SENT_PREFIX), strict=True):
         return True
     for row in await query_db(
             "SELECT prospect_ids_json FROM campaigns WHERE COALESCE(instantly_campaign_id, '') != ''", strict=True):
@@ -1614,7 +1614,7 @@ async def mark_prospect_sent(prospect_id: str, request: Request):
         if not isinstance(body, dict) or not isinstance(body.get("sent", True), bool):
             return _refuse('expected {"sent": true|false}', 400)
         sent = body.get("sent", True)
-        rows = await query_db("SELECT status FROM prospects WHERE id = ?", (prospect_id,))
+        rows = await query_db("SELECT status FROM prospects WHERE id = ?", (prospect_id,), strict=True)
         if not rows:
             return _refuse("unknown prospect", 404)
         current = rows[0].get("status") or "new"
