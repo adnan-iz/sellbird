@@ -28,6 +28,38 @@ from sellbird.workspace_home import current_home
 
 SERVICE = "sellbird"
 
+def write_private_json(path, data: dict) -> None:
+    """Atomically persist credentials without exposing newly-created files.
+
+    The temporary file is owner-only from creation, not chmod'ed after the
+    secrets have already been written. Refuse symlink destinations.
+    """
+    import json
+    import stat
+    import tempfile
+    from pathlib import Path
+
+    path = Path(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise OSError(f"Refusing unsafe credential destination: {path}")
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            if os.name != "nt":
+                os.fchmod(handle.fileno(), stat.S_IRUSR | stat.S_IWUSR)
+            json.dump(data, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 _REF = re.compile(r"^[a-z0-9:_-]{1,128}$")
 _KEYRING_ERRORS = (keyring.errors.KeyringError,)
 
