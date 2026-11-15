@@ -547,13 +547,13 @@ async def trulyinbox_connect(request: Request):
 async def get_rename_notice():
     """Whether to say "Harvey is now Sellbird": once, after an upgrade moved files."""
     from sellbird import legacy
-    return {"show": legacy.welcome_pending(current_home().root)}
+    return {"show": legacy.welcome_pending(current_home().root if current_home().hosted else legacy.PROJECT_ROOT)}
 
 
 @app.post("/api/rename-notice/dismiss")
 async def dismiss_rename_notice():
     from sellbird import legacy
-    legacy.dismiss_welcome(current_home().root)
+    legacy.dismiss_welcome(current_home().root if current_home().hosted else legacy.PROJECT_ROOT)
     return {"success": True}
 
 
@@ -1491,6 +1491,10 @@ def _sellbird_can_send() -> bool:
     config can't be read, the answer is yes (the safe side: no hand sends).
     """
     try:
+        # An absent database has no confirmed delivery state. Never offer a
+        # manual-send action based on optimistic empty query results.
+        if not storage.exists(current_home().db_path):
+            return True
         from sellbird.config import load_config, load_env
         from sellbird.integrations.mail_provider import NATIVE_PROVIDERS, get_mail_provider
         config, env = load_config(), load_env()
