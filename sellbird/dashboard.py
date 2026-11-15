@@ -111,9 +111,9 @@ async def query_db(sql: str, params: tuple = ()) -> list[dict]:
     returns [] so no dashboard route can 500 on an empty install.
     """
     db_path = current_home().db_path
-    if not storage.exists(db_path):
-        return []
     try:
+        if not storage.exists(db_path):
+            return []
         async with storage.connect(str(db_path)) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, params) as cursor:
