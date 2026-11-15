@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from typing import Any
 
 import keyring
 import keyring.errors
@@ -28,7 +29,22 @@ from sellbird.workspace_home import current_home
 
 SERVICE = "sellbird"
 
-def write_private_json(path, data: dict) -> None:
+def workspace_env(key: str, default: str = "") -> str:
+    """Resolve settings without allowing hosted requests to use process secrets.
+
+    Hosted installations populate the workspace-specific secret backend with
+    service 'sellbird' and ref 'env:<lowercase environment name>'. Neither
+    process env nor filesystem .env is used when a home is hosted.
+    Self-hosted installs retain their existing environment behavior.
+    """
+    if not current_home().hosted:
+        return os.getenv(key, default)
+    value = SecretStore().get("env:" + key.lower())
+    return value if value is not None else default
+
+
+
+def write_private_json(path, data: Any) -> None:
     """Atomically persist credentials without exposing newly-created files.
 
     The temporary file is owner-only from creation, not chmod'ed after the
@@ -41,6 +57,15 @@ def write_private_json(path, data: dict) -> None:
 
     path = Path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        directory = path.parent.stat()
+        if directory.st_uid != os.geteuid():
+            raise OSError(f"Credential directory has another owner: {path.parent}")
+        # Repair insecure permissions created by an earlier installation.
+        if directory.st_mode & 0o077:
+            path.parent.chmod(directory.st_mode & 0o700)
+        if path.parent.stat().st_mode & 0o077:
+            raise OSError(f"Credential directory is not private: {path.parent}")
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise OSError(f"Refusing unsafe credential destination: {path}")
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
