@@ -35,6 +35,7 @@ from sellbird import storage  # noqa: E402
 from sellbird.pidfile import LOCK_FILE, loop_lock_held, pid_alive  # noqa: E402
 from sellbird.textio import read_user_text  # noqa: E402
 from sellbird.workspace_home import NotOnHosted, current_home, require_self_hosted, use_home  # noqa: E402
+from sellbird.secrets import workspace_env  # noqa: E402
 DB_PATH = PROJECT_ROOT / "data" / "sellbird.db"
 ENV_FILE = PROJECT_ROOT / ".env"
 CONFIG_FILE = PROJECT_ROOT / "sellbird.yaml"
@@ -155,6 +156,7 @@ def _env_key(line: str) -> str:
 
 
 def _write_env_file(updates: dict[str, str]):
+    require_self_hosted("env_settings")
     """Set keys in .env, keeping every other line (comments, order, other
     keys) as it was.
 
@@ -256,7 +258,7 @@ async def get_setup_status():
     provider = _current_provider()
 
     def _has(*keys):
-        return all((env_vars.get(k, "") or os.getenv(k, "")).strip() for k in keys)
+        return all((env_vars.get(k, "") or workspace_env(k, "")).strip() for k in keys)
 
     if provider == "gmail":
         provider_done = _has("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET") and \
@@ -272,7 +274,7 @@ async def get_setup_status():
         provider_done = _has("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD")
         provider_help = "Enter your SMTP host, username, and password in Settings."
     else:
-        instantly_key = env_vars.get("INSTANTLY_API_KEY", "") or os.getenv("INSTANTLY_API_KEY", "")
+        instantly_key = env_vars.get("INSTANTLY_API_KEY", "") or workspace_env("INSTANTLY_API_KEY", "")
         provider_done = bool(instantly_key) and instantly_key != "your_instantly_api_key_here"
         provider_help = "Enter your Instantly API key in Settings."
     checks.append({
@@ -320,8 +322,8 @@ async def get_setup_status():
     })
 
     # 7. LinkedIn (optional)
-    linkedin_email = env_vars.get("LINKEDIN_EMAIL", "") or os.getenv("LINKEDIN_EMAIL", "")
-    linkedin_pass = env_vars.get("LINKEDIN_PASSWORD", "") or os.getenv("LINKEDIN_PASSWORD", "")
+    linkedin_email = env_vars.get("LINKEDIN_EMAIL", "") or workspace_env("LINKEDIN_EMAIL", "")
+    linkedin_pass = env_vars.get("LINKEDIN_PASSWORD", "") or workspace_env("LINKEDIN_PASSWORD", "")
     checks.append({
         "id": "linkedin", "label": "LinkedIn credentials",
         "done": bool(linkedin_email) and bool(linkedin_pass),
@@ -330,8 +332,8 @@ async def get_setup_status():
     })
 
     # 8. Cloudflare (optional)
-    cf_id = env_vars.get("CLOUDFLARE_ACCOUNT_ID", "") or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-    cf_token = env_vars.get("CLOUDFLARE_API_TOKEN", "") or os.getenv("CLOUDFLARE_API_TOKEN", "")
+    cf_id = env_vars.get("CLOUDFLARE_ACCOUNT_ID", "") or workspace_env("CLOUDFLARE_ACCOUNT_ID", "")
+    cf_token = env_vars.get("CLOUDFLARE_API_TOKEN", "") or workspace_env("CLOUDFLARE_API_TOKEN", "")
     checks.append({
         "id": "cloudflare", "label": "Cloudflare deep crawling",
         "done": bool(cf_id) and bool(cf_token),
@@ -400,7 +402,7 @@ async def get_settings():
     ]
     for key in all_keys:
         if key not in env_vars:
-            env_vars[key] = os.getenv(key, "")
+            env_vars[key] = workspace_env(key, "")
 
     def is_set(k):
         return bool((env_vars.get(k) or "").strip())
@@ -481,9 +483,10 @@ async def save_env_settings(request: Request):
                 return {"success": False, "message": "Could not write .env file."}
             # The sign-in clients take effect now, so the Inboxes tab can sign in
             # without a restart (load_dotenv never overwrites a value already set).
-            for key in ("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "M365_CLIENT_ID", "M365_TENANT_ID"):
-                if key in updates:
-                    os.environ[key] = updates[key]
+            if not current_home().hosted:
+                for key in ("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "M365_CLIENT_ID", "M365_TENANT_ID"):
+                    if key in updates:
+                        os.environ[key] = updates[key]
     return {"success": True}
 
 
@@ -510,7 +513,7 @@ async def trulyinbox_connect(request: Request):
     if not address:
         return JSONResponse({"success": False, "message": ti.NO_ADDRESS}, status_code=400)
     workspace = (_read_env_file().get("TRULYINBOX_WORKSPACE_ID", "")
-                 or os.getenv("TRULYINBOX_WORKSPACE_ID", "")).strip()
+                 or workspace_env("TRULYINBOX_WORKSPACE_ID", "")).strip()
     ti.forget_rejected(key)
     try:
         client = ti.TrulyInbox(key, workspace)
@@ -874,8 +877,8 @@ async def get_feedback(entity_type: str, entity_id: str):
 @app.get("/api/sellbird/status")
 async def get_sellbird_status():
     """Check if Sellbird is currently running."""
-    pid = _check_sellbird_pid()
-    started = _sellbird_started_at.isoformat() if _sellbird_started_at else None
+    pid = None if current_home().hosted else _check_sellbird_pid()
+    started = (_sellbird_started_at.isoformat() if _sellbird_started_at else None) if not current_home().hosted else None
     try:
         state = _state()
         await state.init_db()
