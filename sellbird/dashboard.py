@@ -105,7 +105,7 @@ _env_lock = asyncio.Lock()
 # ── Helpers ──
 
 
-async def query_db(sql: str, params: tuple = ()) -> list[dict]:
+async def query_db(sql: str, params: tuple = (), *, strict: bool = False) -> list[dict]:
     """Run a query and return results as list of dicts.
 
     Never raises: a missing DB file, missing table, or malformed schema
@@ -114,6 +114,8 @@ async def query_db(sql: str, params: tuple = ()) -> list[dict]:
     db_path = current_home().db_path
     try:
         if not storage.exists(db_path):
+            if strict:
+                raise RuntimeError("workspace database unavailable")
             return []
         async with storage.connect(str(db_path)) as db:
             db.row_factory = aiosqlite.Row
@@ -122,6 +124,8 @@ async def query_db(sql: str, params: tuple = ()) -> list[dict]:
                 return [dict(r) for r in rows]
     except Exception as e:
         logger.warning("query_db failed (%s): %s", sql.split(None, 4)[:4], e)
+        if strict:
+            raise
         return []
 
 
@@ -158,7 +162,6 @@ def _env_key(line: str) -> str:
 
 
 def _write_env_file(updates: dict[str, str]):
-    require_self_hosted("env_settings")
     """Set keys in .env, keeping every other line (comments, order, other
     keys) as it was.
 
@@ -168,6 +171,7 @@ def _write_env_file(updates: dict[str, str]):
     result is owner-only (0600 on POSIX) whether .env existed or not. A
     symlinked .env is refused rather than replaced or followed.
     """
+    require_self_hosted("env_settings")
     env_file = current_home().env_file
     if env_file.is_symlink():
         raise OSError(f"{env_file} is a symbolic link; edit it by hand.")
@@ -1553,9 +1557,9 @@ async def _sellbird_committed_ids() -> set[str]:
     ids = {r["prospect_id"] for r in await query_db(
         "SELECT DISTINCT prospect_id FROM outbox WHERE status IN ('approved', 'sending', 'sent') "
         "OR (status = 'failed' AND substr(error, 1, ?) = ?)",
-        (len(MAYBE_SENT_PREFIX), MAYBE_SENT_PREFIX))}
+        (len(MAYBE_SENT_PREFIX), MAYBE_SENT_PREFIX), strict=True)}
     for row in await query_db(
-            "SELECT prospect_ids_json FROM campaigns WHERE COALESCE(instantly_campaign_id, '') != ''"):
+            "SELECT prospect_ids_json FROM campaigns WHERE COALESCE(instantly_campaign_id, '') != ''", strict=True):
         try:
             found = json.loads(row.get("prospect_ids_json") or "[]")
         except (json.JSONDecodeError, TypeError):
@@ -1583,7 +1587,7 @@ async def _sellbird_sent_to(prospect_id: str) -> bool:
             (prospect_id, len(MAYBE_SENT_PREFIX), MAYBE_SENT_PREFIX)):
         return True
     for row in await query_db(
-            "SELECT prospect_ids_json FROM campaigns WHERE COALESCE(instantly_campaign_id, '') != ''"):
+            "SELECT prospect_ids_json FROM campaigns WHERE COALESCE(instantly_campaign_id, '') != ''", strict=True):
         try:
             if prospect_id in json.loads(row.get("prospect_ids_json") or "[]"):
                 return True
