@@ -34,7 +34,7 @@ from sellbird.paths import PACKAGE_ROOT, PROJECT_ROOT, is_checkout  # noqa: E402
 from sellbird import storage  # noqa: E402
 from sellbird.pidfile import LOCK_FILE, loop_lock_held, pid_alive  # noqa: E402
 from sellbird.textio import read_user_text  # noqa: E402
-from sellbird.workspace_home import NotOnHosted, use_home  # noqa: E402
+from sellbird.workspace_home import NotOnHosted, current_home, require_self_hosted, use_home  # noqa: E402
 DB_PATH = PROJECT_ROOT / "data" / "sellbird.db"
 ENV_FILE = PROJECT_ROOT / ".env"
 CONFIG_FILE = PROJECT_ROOT / "sellbird.yaml"
@@ -53,7 +53,7 @@ def _resolve_config_file() -> Path:
     try:
         return Path(_find_config_file())
     except ConfigFileNotFoundError:
-        return CONFIG_FILE
+        return current_home().config_file or CONFIG_FILE
 
 # No /docs, /redoc or /openapi.json: the API is for this UI only, and every
 # route except the static shell needs the token (see dashboard_auth).
@@ -110,10 +110,11 @@ async def query_db(sql: str, params: tuple = ()) -> list[dict]:
     Never raises: a missing DB file, missing table, or malformed schema
     returns [] so no dashboard route can 500 on an empty install.
     """
-    if not DB_PATH.exists():
+    db_path = current_home().db_path
+    if not storage.exists(db_path):
         return []
     try:
-        async with storage.connect(str(DB_PATH)) as db:
+        async with storage.connect(str(db_path)) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, params) as cursor:
                 rows = await cursor.fetchall()
@@ -133,8 +134,9 @@ def _mask_key(key: str) -> str:
 def _read_env_file() -> dict[str, str]:
     """Read .env file and return as dict."""
     env_vars = {}
-    if ENV_FILE.exists():
-        for line in read_user_text(ENV_FILE).splitlines():
+    env_file = current_home().env_file
+    if env_file.exists():
+        for line in read_user_text(env_file).splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
@@ -162,12 +164,13 @@ def _write_env_file(updates: dict[str, str]):
     result is owner-only (0600 on POSIX) whether .env existed or not. A
     symlinked .env is refused rather than replaced or followed.
     """
-    if ENV_FILE.is_symlink():
-        raise OSError(f"{ENV_FILE} is a symbolic link; edit it by hand.")
-    if ENV_FILE.exists() and not ENV_FILE.is_file():
-        raise OSError(f"{ENV_FILE} is not a regular file.")
-    lines = (read_user_text(ENV_FILE).splitlines()
-             if ENV_FILE.exists() else [])
+    env_file = current_home().env_file
+    if env_file.is_symlink():
+        raise OSError(f"{env_file} is a symbolic link; edit it by hand.")
+    if env_file.exists() and not env_file.is_file():
+        raise OSError(f"{env_file} is not a regular file.")
+    lines = (read_user_text(env_file).splitlines()
+             if env_file.exists() else [])
 
     out, written = [], set()
     for line in lines:
@@ -181,7 +184,7 @@ def _write_env_file(updates: dict[str, str]):
             out.append(line)
     out += [f"{k}={v}" for k, v in updates.items() if k not in written]
 
-    fd, tmp = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=str(ENV_FILE.parent))
+    fd, tmp = tempfile.mkstemp(prefix=".env.", suffix=".tmp", dir=str(env_file.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             if os.name != "nt":
@@ -189,14 +192,15 @@ def _write_env_file(updates: dict[str, str]):
             f.write("\n".join(out) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, ENV_FILE)
+        os.replace(tmp, env_file)
     except BaseException:
         try:
             os.unlink(tmp)
         except FileNotFoundError:
             pass
         raise
-    load_dotenv(str(ENV_FILE), override=True)
+    if not current_home().hosted:
+        load_dotenv(str(env_file), override=True)
 
 
 def _check_sellbird_pid() -> int | None:
@@ -240,7 +244,7 @@ async def get_setup_status():
 
     # 2. Env file
     env_vars = _read_env_file()
-    env_exists = ENV_FILE.exists() and bool(env_vars)
+    env_exists = current_home().env_file.exists() and bool(env_vars)
     checks.append({
         "id": "env_file", "label": "Environment file (.env)",
         "done": env_exists,
@@ -256,12 +260,12 @@ async def get_setup_status():
 
     if provider == "gmail":
         provider_done = _has("GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET") and \
-            (PROJECT_ROOT / "data" / "gmail_token.json").is_file()
+            current_home().gmail_token_file.is_file()
         provider_help = ("Add your Google OAuth client ID and secret in Settings, then sign "
                          "in on the Inboxes tab (or run 'sellbird gmail auth').")
     elif provider == "microsoft":
         provider_done = _has("M365_CLIENT_ID") and \
-            (PROJECT_ROOT / "data" / "m365_token.json").is_file()
+            current_home().m365_token_file.is_file()
         provider_help = ("Add your Microsoft 365 client and tenant IDs in Settings, then sign "
                          "in on the Inboxes tab (or run 'sellbird microsoft auth').")
     elif provider == "smtp":
@@ -307,7 +311,7 @@ async def get_setup_status():
     })
 
     # 6. Product trained
-    product_trained = (PROJECT_ROOT / "skills" / "product_knowledge.md").exists()
+    product_trained = (current_home().skills_dir / "product_knowledge.md").exists()
     checks.append({
         "id": "product_trained", "label": "Product knowledge trained",
         "done": product_trained,
@@ -402,7 +406,7 @@ async def get_settings():
         return bool((env_vars.get(k) or "").strip())
 
     # Gmail is authorized once sellbird gmail auth has stored a token file.
-    gmail_token = (PROJECT_ROOT / "data" / "gmail_token.json").is_file()
+    gmail_token = current_home().gmail_token_file.is_file()
 
     return {
         "provider": _current_provider(),
@@ -428,7 +432,7 @@ async def get_settings():
         # in as a public client with PKCE); the token file means signed in.
         "m365_client_id": env_vars.get("M365_CLIENT_ID", ""),
         "m365_tenant_id": env_vars.get("M365_TENANT_ID", ""),
-        "m365_authorized": (PROJECT_ROOT / "data" / "m365_token.json").is_file(),
+        "m365_authorized": current_home().m365_token_file.is_file(),
         "reoon_api_key_set": is_set("REOON_API_KEY"),
         "zerobounce_api_key_set": is_set("ZEROBOUNCE_API_KEY"),
         "hunter_api_key_set": is_set("HUNTER_API_KEY"),
@@ -438,6 +442,7 @@ async def get_settings():
 @app.post("/api/settings/env")
 async def save_env_settings(request: Request):
     """Save environment variables to .env file."""
+    require_self_hosted("env_settings")
     try:
         data = await request.json()
     except Exception:
@@ -531,13 +536,13 @@ async def trulyinbox_connect(request: Request):
 async def get_rename_notice():
     """Whether to say "Harvey is now Sellbird": once, after an upgrade moved files."""
     from sellbird import legacy
-    return {"show": legacy.welcome_pending(legacy.PROJECT_ROOT)}
+    return {"show": legacy.welcome_pending(current_home().root)}
 
 
 @app.post("/api/rename-notice/dismiss")
 async def dismiss_rename_notice():
     from sellbird import legacy
-    legacy.dismiss_welcome(legacy.PROJECT_ROOT)
+    legacy.dismiss_welcome(current_home().root)
     return {"success": True}
 
 
@@ -651,7 +656,7 @@ async def get_company():
         await state.init_db()
         raw = await state.get_setting(PROPOSED_KEY)
         proposed = json.loads(raw) if raw else None
-        return company_view(load_config(), PROJECT_ROOT, proposed)
+        return company_view(load_config(), current_home().root, proposed)
     except Exception as e:
         return JSONResponse({"error": f"Couldn't read your config: {e}"}, status_code=500)
 
@@ -827,8 +832,11 @@ async def add_feedback(request: Request):
         return {"success": False, "message": "Comment is required."}
     feedback_id = uuid.uuid4().hex[:12]
     try:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        async with storage.connect(str(DB_PATH)) as db:
+        db_path = current_home().db_path
+        backend, name = storage.split(db_path)
+        if backend is None:
+            Path(name).parent.mkdir(parents=True, exist_ok=True)
+        async with storage.connect(str(db_path)) as db:
             # Ensure the table exists so feedback works even on a fresh install
             await db.execute(
                 """CREATE TABLE IF NOT EXISTS feedback (
@@ -1200,7 +1208,7 @@ async def get_prospects():
 
 def _state():
     from sellbird.state import StateManager
-    return StateManager(db_path=str(DB_PATH))
+    return StateManager(db_path=str(current_home().db_path))
 
 
 # What a reviewer needs next to a draft to check its claims against the facts.
@@ -1488,10 +1496,14 @@ def _extra_inboxes_connected() -> bool:
     """Whether an inbox besides the main one is connected (sellbird inboxes):
     Sellbird sends from it even while the main mailbox isn't signed in."""
     import sqlite3
-    if not Path(DB_PATH).exists():
+    # Unknown hosted mailbox state must never allow duplicate hand sends.
+    if current_home().hosted:
+        return True
+    db_path = current_home().db_path
+    if not Path(db_path).exists():
         return False
     try:
-        with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as db:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
             row = db.execute("SELECT 1 FROM mailboxes WHERE state != 'retired' LIMIT 1").fetchone()
     except sqlite3.Error:
         return False   # no table yet: no extra inbox
@@ -1686,7 +1698,7 @@ async def export_prospects(all: bool = False, min_score: int = 0, email_status: 
     from sellbird.state import StateManager
     from sellbird.export import export_prospects_csv
 
-    state = StateManager(db_path=str(DB_PATH))
+    state = _state()
     try:
         await state.init_db()
         statuses = [s.strip() for s in email_status.split(",") if s.strip()] or None
