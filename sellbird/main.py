@@ -190,7 +190,7 @@ async def decide_next_action(
     deployable = 0 if held else draft_campaigns
     # A failed Instantly deployment must not monopolize every heartbeat.
     # The sender persists a bounded retry timestamp in this workspace DB.
-    if deployable and getattr(email, "provider", "") == "instantly":
+    if deployable and state is not None and getattr(email, "provider", "") == "instantly":
         raw_retry = await state.get_setting("instantly_deploy_retry_after")
         if raw_retry:
             try:
