@@ -1736,6 +1736,8 @@ async def export_prospects(all: bool = False, min_score: int = 0, email_status: 
 @app.get("/api/campaigns")
 async def get_campaigns():
     rows = await query_db("SELECT * FROM campaigns ORDER BY created_at DESC LIMIT 100")
+    if not rows:
+        return []
     sellbird_sends = _sellbird_can_send()
     send_as = "" if sellbird_sends else _send_as()
     footer = _compliance_view()["footer"]
@@ -2288,7 +2290,7 @@ async def get_live_status():
     sellbird_sends = _sellbird_can_send()
     awaiting_review = await _scalar("SELECT COUNT(*) FROM outbox WHERE status = 'pending_review'")
     by_hand: set[str] = set()
-    if not sellbird_sends:
+    if not sellbird_sends and drafted:
         skip = await _sellbird_committed_ids() | await _hand_sent_ids()
         by_hand = {p["id"] for p in prospects
                    if p["id"] in drafted and p["id"] not in skip
